@@ -17,6 +17,9 @@
 #ifndef FFT_SRC_GET
 #   error "undeined FFT_SRC_GET(x,y)"
 #endif
+#ifndef FFT_SRC_INV
+#   define FFT_SRC_GET
+#endif
 
 #include "macro_common.fxh"
 #include "macro_bitop.fxh"
@@ -47,27 +50,29 @@ sampler2D sampBufVB { Texture = texBufVA; FILTER(POINT); };
 //  Util
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
-/*
-    raw input -> bit reverse -> butterfly -> output
-    raw input layout:
-        0 | 1 | 2 | 3 | 4 | ...
+//
+// raw input -> bit reverse -> butterfly -> output
+//
+//  forward flow
+//   │
+//   │  r0 output layout:         rN output layout (last)
+//   │     0 ║ 2 ║ 4 ║ 6 ║ 8 ║ ...
+//   │     1 ║ 3 ║ 5 ║ 7 ║ 9 ║ ...
+//   ▼
+//      r1 output layout:              rN-1 output layout
+//         0 │ 1 ║ 4 │ 5 ║  8 │  9 ║ ...
+//         2 │ 3 ║ 6 │ 7 ║ 10 │ 11 ║ ...
+//
+//      r2 output layout               rN-2 output layout
+//         0 │ 1 │ 2 │ 3 ║  8 │  9 │ 10 │ 11 ║ ...
+//         4 │ 5 │ 6 │ 7 ║ 12 │ 13 │ 14 │ 15 ║ ...
+//                                                           ▲
+//      rN output layout (last)           r0 output layout   │
+//         0   │ 1       │ 2       │ ... │ 2^N - 1     ║     │
+//         2^N │ 2^N + 1 │ 2^N + 2 │ ... │ 2^(N+1) - 1 ║     │
+//                                                           │
+//                                                invsersed flow
 
-    r0 output layout:
-        0 ║ 2 ║ 4 ║ 6 ║ 8 ║ ...
-        1 ║ 3 ║ 5 ║ 7 ║ 9 ║ ...
-
-    r1 output layout:
-        0 | 1 ║ 4 | 5 ║  8 |  9 ║ ...
-        2 | 3 ║ 6 | 7 ║ 10 | 11 ║ ...
-
-    r2 output layout
-        0 | 1 | 2 | 3 ║  8 |  9 | 10 | 11 ║ ...
-        4 | 5 | 6 | 7 ║ 12 | 13 | 14 | 15 ║ ...
-
-    rN output layout (last)
-        0   | 1       | 2       | ... | 2^N - 1     ║
-        2^N | 2^N + 1 | 2^N + 2 | ... | 2^(N+1) - 1 ║
-*/
 // fetch sample by xPos
 // output pos -> sampleID -> input pos
 float2x2 tex2DfetchID( sampler2D texIn, float4 vpos, float r) {
@@ -106,6 +111,19 @@ float2x2 twiddle( float k, float r ) {
 }
 
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+//  getters. get the result of either forward or inversed flow
+//+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+// forward declaration
+float2 get( int2 pos );
+float  amp( int2 pos)       { return length(get(pos)); }
+float  phase( int2 pos)     { return atan2(get(pos).yx); }
+// de-scramble sample
+float2 getInv(int2 pos)     { return pos.y = rBit(pos.y, FFT_SRC_POTY), get(pos); }
+float  ampInv( int2 pos)    { return length(getInv(pos)); }
+float  phaseInv( int2 pos)  { return atan2(getInv(pos).yx); }
+
+//+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 //  shaders
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
@@ -113,90 +131,91 @@ float4 vs_fft( uint vid : SV_VERTEXID ) : SV_POSITION {
     return float4((vid.xx == uint2(2,1)? float2(-3,3):float2(1,-1)), 0,1);
 }
 // main fft pass.
-float4 ps_fft( sampler2D texIn, int4 vpos, float r) {
+float4 ps_fft( sampler2D texIn, int4 vpos, float r, int dir) {
     float2x2 s = tex2DfetchID(texIn, vpos, r = exp2(r));
-    s[1] = mul(s[1],twiddle(vpos.x%r,r)); // implicit cmul
+    s[1] = mul(s[1],twiddle(dir*(vpos.x%r),r)); // implicit cmul
     return float4(s[0]+s[1], s[0]-s[1]);
 }
 
-// c2c
+// c2c first pass
 float4 ps_hori(float4 vpos ) {
-    vpos.xy = trunc(vpos.xy)*2;             // 0,1,2,...WH/2 -1 -> 0,2,4, ... WH -2
+    vpos.x  = trunc(vpos.x)*2;
     vpos.w  = rBit(vpos.x+1, FFT_SRC_POTX); // bitReverwe( p0 )
     vpos.x  = rBit(vpos.x,   FFT_SRC_POTX); // bitReverwe( p1 )
-
     float4 c;
-    c.xy = (SRC_GET(vpos.x,vpos.y)), c.zw = (SRC_GET(vpos.w,vpos.y));
+    c.xy = (FFT_SRC_GET(vpos.x,vpos.y));
+    c.zw = (FFT_SRC_GET(vpos.w,vpos.y));
     return float4( c.xy+c.zw, c.xy-c.zw);
 }
-
-//  (src buffer content)
-//           vpos.y                   w - vpos.y
-//   0 on .xy   ↓         w/2 on .zw      ↓
-//      ┌─────┬──┬──────┐       ┌───────┬───┬───┐
-//      ├─────┼──┼──────┤       ├───────┼───┼───┤
-//      │     │p0│      │       │       │p0*│   │ <- rBit(vpos.x, h)/2
-//      ├─────┼──┼──────┤       ├───────┼───┼───┤    (unpack to even/odd row with p0 & p0*)
-//      │               │       │               │
-//      │               │       │               │
-//      │               │       │               │
-//      ├─────┼──┼──────┤       ├───────┼───┼───┤
-//      │     │p1│      │       │       │p1*│   │ <— rBit(vpos.x+1, h)/2
-//      ├─────┼──┼──────┤       ├───────┼───┼───┤    (unpack to even/odd row with p1 & p1*)
-//      └─────┴──┴──────┘       └───────┴───┴───┘
-//
-float4 ps_vert( sampler2D texIn, float4 vpos) {
-
-    vpos.y  = trunc(vpos.y);
-    vpos.x  = trunc(vpos.x)*2;          // [0, h/2-1] * 2
-    vpos.w  = rBit(vpos.x+1, FFT_SRC_POTY); // src index for p1
-    vpos.x  = rBit(vpos.x,   FFT_SRC_POTY); // src index for p0
-    int sel = vpos.x % 2;               // is accessed index on odd or even row.
-    vpos.xw = vpos.xw / 2;              // (either both odd or even with bit reversed)
-
-    // vpos.y = [0, w/2-1] < src buffer size X
-    float4 X, cX;
-    X.xy = tex2Dfetch(texIn, vpos.yxzz).xy; // p0
-    X.zw = tex2Dfetch(texIn, vpos.ywzz).xy; // p1
-
-    // complex conjugate
-    vpos.y = (FFT_SRC_SIZEX - vpos.y) % (FFT_SRC_SIZEX*.5); // vpos.y = 0 -> 0
-    cX.xy  = tex2Dfetch(texIn, vpos.yxzz).zw; // p0*
-    cX.zw  = tex2Dfetch(texIn, vpos.ywzz).zw; // p1*
-    cX.yw  = -cX.yw;
-
-    // can't use float4x2
-    // even: (X+cX)*.5;  odd: i(cX-X) * .5
-    float4 p = int(vpos.y)?                     // if vpos.y = 0, pack id(0) & id(w/2)
-        (sel? float4(X.yw-cX.yw,cX.xz-X.xz) : (X.xzyw+cX.xzyw)) *.5 :
-        (sel? float4(X.yw,cX.yw) : float4(X.xz,cX.xz)); // wrap row w/2 into row 0
-
-    return float4(p.xz+p.yw,p.xz-p.yw);
+float4 ps_hori_inv(float4 vpos ) {
+    vpos.x  = trunc(vpos.x)*2;
+    vpos.z  = FFT_SRC_SIZEX*.5;
+    vpos.w  = vpos.x+vpos.z;
+    float4 c;
+    c.xy = (FFT_SRC_INV(vpos.x,vpos.y));
+    c.zw = (FFT_SRC_INV(vpos.w,vpos.y));
+    c.zw = mul(c.zw,twiddle(-(vpos.x % vpos.z),vpos.z))
+    return float4(c.xy+c.zw, c.xy-c.zw)*.5;
 }
 
+
+//  (src buffer content)
+//           vpos.y
+//   0 on .xy   ↓         w/2 on .zw
+//      ┌─────┬──┬──────┐┌───────────────┐
+//      ├─────┼──┼──────┤├───────────────┤
+//      │     │p0│                       │ <- rBit(vpos.x, h)
+//      ├─────┼──┼──────┤├───────────────┤
+//      │     ¦  ¦                       │
+//      │     ¦  ¦                       │
+//      │     ¦  ¦                       │
+//      ├─────┼──┼──────┤├───────────────┤
+//      │     │p1│                       │ <— rBit(vpos.x+1, h)
+//      ├─────┼──┼──────┤├───────────────┤
+//      └─────┴──┴──────┘└───────────────┘
 //
-//  A[r]    = (HA[r]    + HA[h-r]*) *.5
-//  C[r]    = (HA[h-r]* - HA[r]) *.5 *i
-//
+float4 ps_vert( sampler2D texIn, float4 vpos) {
+    vpos.x  = trunc(vpos.x)*2;
+    vpos.w  = rBit(vpos.x+1, FFT_SRC_POTY); // src index for p1
+    vpos.x  = rBit(vpos.x,   FFT_SRC_POTY); // src index for p0
+
+    int hh = (FFT_SRC_SIZEX*.5), sel = vpos.y / hh;
+    vpos.y %= hh;
+
+    float4 p;
+    p.xy = float2x2(tex2Dfetch(texIn, vpos.yxzz))[sel]; // p0
+    p.zw = float2x2(tex2Dfetch(texIn, vpos.ywzz))[sel]; // p1
+    return float4(p.xy+p.zw,p.xy-p.zw);
+}
+float4 ps_vert_inv( sampler2D texIn, float4 vpos) {
+    vpos.x  = trunc(vpos.x);                // [0, h/2-1]
+    vpos.y  = rBit(vpos.y, FFT_SRC_POTX);   // de-scramble sample
+
+    int hh = (FFT_SRC_SIZEX*.5), hw = (FFT_SRC_SIZEY*.5), sel = vpos.y / hh;
+    vpos.y %= hh;
+    vpos.w  = vpos.x+hw;
+
+    float4 p;
+    p.xy = float2x2(tex2Dfetch(texIn, vpos.yxzz))[sel]; // p0
+    p.zw = float2x2(tex2Dfetch(texIn, vpos.ywzz))[sel]; // p1
+    p.zw = mul(p.zw,twiddle(-(vpos.x % hw),hw))
+    return float4(p.xy+p.zw,p.xy-p.zw)*.5;
+}
+
 //  Src Texture Layout:
-//
-//       posY  0.xy  ...  h/2-1  0.zw  ...  h/2-1
-//            ├────────────────┤├────────────────┤
-//        ID   0                 h/2
-//     ┬ posX ┌────────────────┐┌────────────────┐
-//     │  0   │    (HA[r]    + HA[h-r]*) *.5     │ HA
-//     │      ├────────────────┤├────────────────┤
-//     │      │                ││                │ <┐
-//     │      │       HB       ││       HB       │  │ Hermitian
-//     │      │                ││                │  │ symmatry on HB
-//     ┼      ├────────────────┤├────────────────┤  │ HB [k,r] = HB *[k,w-r]
-//     │ w/2  ¦    (HA[h-r]* - HA[r]) *.5 *i     ¦  │
-//     │      ¦················¦¦················¦  │
-//     │      ¦                ¦¦                ¦  │
-//     │      ¦      HB*       ¦¦       HB*      ¦  │
-//     │      ¦                ¦¦                ¦ <┘
-//     ┴      ····································
-//                                         HB[h-1, w-1] = HB*[h-1,1]
+//           vpos.y
+//   0 on .xy  ↓         h/2 on .zw
+//      ┌─────┬───┬──────┐┌─────────────────┐
+//      │     ¦   ¦                         │
+//      ├─────┼───┼──────┤├─────────────────┤
+//      │     │ p │                         │ <- vpos.x
+//      ├─────┼───┼──────┤├─────────────────┤
+//      │     ¦   ¦                         │
+//      │     ¦   ¦                         │
+//      │     ¦   ¦                         │
+//      │     ¦   ¦                         │
+//      │     ¦   ¦                         │
+//      └─────┴───┴──────┘└─────────────────┘
 //
 #if (FFT_SRC_POTY & 1)
 #   define sampBufV sampBufVB
@@ -204,79 +223,50 @@ float4 ps_vert( sampler2D texIn, float4 vpos) {
 #   define sampBufV sampBufVA
 #endif
 // get fft (real, img) from buffer directly without additional pass
-// unpacked M x N ( instead of M x (N/2+1))
 float2 get( int2 pos ) {
-    int2 hSize = int2(FFT_SRC_SIZEX, FFT_SRC_SIZEY);
-
-    if ( any(pos < 0 || pos >= hSize))
-        return 0;
-
-    float4 p = float4(pos,hSize-pos);
-    hSize /= 2;
-
-    int3 sel = p.xyw / hSize.xyy; // x-> conj sel, y -> layer sel, z -> conj layer sel
-    p.yw %= hSize.y;              // wrap coord
-
-    [flatten]
-    if( pos.x == 0 || pos.x == hSize.x) { // on first or w/2 column
-        float4 H;
-        p.z  = 0;
-        H.xy = float2x2(tex2Dfetch(sampBufV, p.yxzz))[sel.y];
-        H.zw = float2x2(tex2Dfetch(sampBufV, p.wxzz))[sel.z], H.w = -H.w; // conj
-        return (pos.x? float2(H.z+H.y,H.w-H.x):(H.xy+H.zw))*.5;
-    }
-    p.w = 0;
-    float2 res = float2x2(tex2Dfetch(sampBufV, sel.x? p.yzww:p.yxww))[sel.y];
-    return float2(res.x, sel.x? -res.y:res.y); // conj
+    float4 vpos = float4(pos,0,FFT_SRC_SIZEY*.5);
+    vpos.y %= vpos.w, pos.y /= vpos.w;
+    return float2x2(tex2Dfetch(sampBufV, vpos.yxzz))[pos.y];
 }
 #undef  sampBufV
-
-float amp( int2 pos )   { return length(get(pos)); }
-float phase( int2 pos ) { return atan2(get(pos).yx); }
 
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 //  Pass Setup
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 // ps ctor; < t: output buffer > < r: stage number (0 index) >
-#define PS_FFT( t, r ) \
-float4 ps_fft_##t##r( float4 vpos : SV_POSITION ) : SV_TARGET { return ps_fft( samp##t, vpos, r ); }
+#define PS_FFT( t, r, z ) \
+float4 ps_fft_##t##r  ( float4 vpos : SV_POSITION) : SV_TARGET { \
+    return ps_fft( samp##t, vpos, r, 1); } \
+float4 ps_ifft_##t##r ( float4 vpos : SV_POSITION) : SV_TARGET { \
+    return ps_fft( samp##t, vpos, (z)-(r), -1)*.5; }
 
-// horizontal pixel shaders
-float4 ps_fft_BufHA0 (float4 vpos : SV_POSITION) : SV_TARGET {return ps_hori(vpos);}
-PS_FFT(BufHB,  1)
-PS_FFT(BufHA,  2)
-PS_FFT(BufHB,  3)
-PS_FFT(BufHA,  4)
-PS_FFT(BufHB,  5)
-PS_FFT(BufHA,  6)
-PS_FFT(BufHB,  7)
-PS_FFT(BufHA,  8)
-PS_FFT(BufHB,  9)
-PS_FFT(BufHA, 10)
-PS_FFT(BufHB, 11)
-PS_FFT(BufHA, 12)
+// horizontal init pass
+float4 ps_fft_BufHA0  (float4 vpos : SV_POSITION) : SV_TARGET { return ps_hori(vpos); }
+float4 ps_ifft_BufHA0 (float4 vpos : SV_POSITION) : SV_TARGET { return ps_hori_inv(vpos); }
 
-// vertical pixel shaders
+// vertical init pass
 #if (FFT_SRC_POTX & 1)
 #   define sampBufH sampBufHB
 #else
 #   define sampBufH sampBufHA
 #endif
-float4 ps_fft_BufVA0 (float4 vpos : SV_POSITION) : SV_TARGET {return ps_vert(sampBufH,vpos);}
+float4 ps_fft_BufVA0  (float4 vpos : SV_POSITION) : SV_TARGET {return ps_vert(sampBufH,vpos);}
+float4 ps_ifft_BufVA0 (float4 vpos : SV_POSITION) : SV_TARGET {return ps_vert_inv(sampBufH,vpos);}
 #undef sampBufH
 
-PS_FFT(BufVB,  1)
-PS_FFT(BufVA,  2)
-PS_FFT(BufVB,  3)
-PS_FFT(BufVA,  4)
-PS_FFT(BufVB,  5)
-PS_FFT(BufVA,  6)
-PS_FFT(BufVB,  7)
-PS_FFT(BufVA,  8)
-PS_FFT(BufVB,  9)
-PS_FFT(BufVA, 10)
-PS_FFT(BufVB, 11)
-PS_FFT(BufVA, 12)
+// intermediate passes
+PS_FFT(BufHB,  1, FFT_SRC_POTX)   PS_FFT(BufVB,  1, FFT_SRC_POTY)
+PS_FFT(BufHA,  2, FFT_SRC_POTX)   PS_FFT(BufVA,  2, FFT_SRC_POTY)
+PS_FFT(BufHB,  3, FFT_SRC_POTX)   PS_FFT(BufVB,  3, FFT_SRC_POTY)
+PS_FFT(BufHA,  4, FFT_SRC_POTX)   PS_FFT(BufVA,  4, FFT_SRC_POTY)
+PS_FFT(BufHB,  5, FFT_SRC_POTX)   PS_FFT(BufVB,  5, FFT_SRC_POTY)
+PS_FFT(BufHA,  6, FFT_SRC_POTX)   PS_FFT(BufVA,  6, FFT_SRC_POTY)
+PS_FFT(BufHB,  7, FFT_SRC_POTX)   PS_FFT(BufVB,  7, FFT_SRC_POTY)
+PS_FFT(BufHA,  8, FFT_SRC_POTX)   PS_FFT(BufVA,  8, FFT_SRC_POTY)
+PS_FFT(BufHB,  9, FFT_SRC_POTX)   PS_FFT(BufVB,  9, FFT_SRC_POTY)
+PS_FFT(BufHA, 10, FFT_SRC_POTX)   PS_FFT(BufVA, 10, FFT_SRC_POTY)
+PS_FFT(BufHB, 11, FFT_SRC_POTX)   PS_FFT(BufVB, 11, FFT_SRC_POTY)
+PS_FFT(BufHA, 12, FFT_SRC_POTX)   PS_FFT(BufVA, 12, FFT_SRC_POTY)
 
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 //  technique
@@ -285,10 +275,11 @@ PS_FFT(BufVA, 12)
 #define COND_PASS( a,b,e,d,c ) COND( a##d { b (e,  d); }, c , d )
 #undef  COND_EXP
 #define COND_EXP(k)     pass k
-#define PASS_FFT(t,r)   VertexShader=vs_fft; PixelShader=ps_fft_##t##r;  RenderTarget=tex##t
+#define PASS_FFT(t,r)   VertexShader=vs_fft; PixelShader=ps_fft_##t##r; RenderTarget=tex##t
+#define PASS_IFFT(t,r)  VertexShader=vs_fft; PixelShader=ps_ifft_##t##r; RenderTarget=tex##t
 
 //compile-time resolve pass layout
-technique fastNfurious {
+technique forward {
 
 #   define EVAL_EXP FFT_SRC_POTX
 #   include "macro_eval.fxh"   // evaluate preprocessor expression
@@ -323,6 +314,44 @@ technique fastNfurious {
     COND_PASS( vert, PASS_FFT, BufVA, 10, EVAL_RES)
     COND_PASS( vert, PASS_FFT, BufVB, 11, EVAL_RES)
     COND_PASS( vert, PASS_FFT, BufVA, 12, EVAL_RES) // 8192
+#   undef   EVAL_RES
+#   undef   EVAL_EXP
+}
+technique inversed {
+
+#   define EVAL_EXP FFT_SRC_POTX
+#   include "macro_eval.fxh"   // evaluate preprocessor expression
+    COND_PASS( hori, PASS_IFFT, BufHA,  0, EVAL_RES) // ps_ifft_BufHA0
+    COND_PASS( hori, PASS_IFFT, BufHB,  1, EVAL_RES)
+    COND_PASS( hori, PASS_IFFT, BufHA,  2, EVAL_RES)
+    COND_PASS( hori, PASS_IFFT, BufHB,  3, EVAL_RES)
+    COND_PASS( hori, PASS_IFFT, BufHA,  4, EVAL_RES)
+    COND_PASS( hori, PASS_IFFT, BufHB,  5, EVAL_RES)
+    COND_PASS( hori, PASS_IFFT, BufHA,  6, EVAL_RES)
+    COND_PASS( hori, PASS_IFFT, BufHB,  7, EVAL_RES)
+    COND_PASS( hori, PASS_IFFT, BufHA,  8, EVAL_RES)
+    COND_PASS( hori, PASS_IFFT, BufHB,  9, EVAL_RES)
+    COND_PASS( hori, PASS_IFFT, BufHA, 10, EVAL_RES)
+    COND_PASS( hori, PASS_IFFT, BufHB, 11, EVAL_RES)
+    COND_PASS( hori, PASS_IFFT, BufHA, 12, EVAL_RES) // 8192
+#   undef   EVAL_RES
+#   undef   EVAL_EXP
+
+#   define  EVAL_EXP FFT_SRC_POTY
+#   include "macro_eval.fxh"
+    COND_PASS( vert, PASS_IFFT, BufVA,  0, EVAL_RES)
+    COND_PASS( vert, PASS_IFFT, BufVB,  1, EVAL_RES)
+    COND_PASS( vert, PASS_IFFT, BufVA,  2, EVAL_RES)
+    COND_PASS( vert, PASS_IFFT, BufVB,  3, EVAL_RES)
+    COND_PASS( vert, PASS_IFFT, BufVA,  4, EVAL_RES)
+    COND_PASS( vert, PASS_IFFT, BufVB,  5, EVAL_RES)
+    COND_PASS( vert, PASS_IFFT, BufVA,  6, EVAL_RES)
+    COND_PASS( vert, PASS_IFFT, BufVB,  7, EVAL_RES)
+    COND_PASS( vert, PASS_IFFT, BufVA,  8, EVAL_RES)
+    COND_PASS( vert, PASS_IFFT, BufVB,  9, EVAL_RES)
+    COND_PASS( vert, PASS_IFFT, BufVA, 10, EVAL_RES)
+    COND_PASS( vert, PASS_IFFT, BufVB, 11, EVAL_RES)
+    COND_PASS( vert, PASS_IFFT, BufVA, 12, EVAL_RES) // 8192
 #   undef   EVAL_RES
 #   undef   EVAL_EXP
 }
