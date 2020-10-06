@@ -75,6 +75,7 @@ sampler2D sampBufVB { Texture = texBufVA; FILTER(POINT); };
 
 // fetch sample by xPos
 // output pos -> sampleID -> input pos
+// TODO: #1 varify inverse flow is properly configured
 float2x2 tex2DfetchID( sampler2D texIn, float4 vpos, float r) {
     vpos.x += trunc(vpos.x/r)*r;
     int2 id = float2(vpos.x,vpos.x+r); // working id
