@@ -24,6 +24,8 @@ sampler2D sampSrc   { Texture = texSrc; FILTER(POINT); };
 //  Include FFT lib
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
+// it does support forward and inverse transform, but doesn't make too much sense
+// doing inverse on real sequence?
 #include "fft_r2c.fxh"
 
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++

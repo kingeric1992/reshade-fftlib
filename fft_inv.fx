@@ -24,9 +24,9 @@ sampler2D sampSrc   { Texture = texSrc; FILTER(POINT); };
 
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 //  Include FFT lib
-//      c2c lib support both forward and inverse flow
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
+// c2c lib support both forward and inverse flow
 #include "fft_c2c.fxh"
 
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
