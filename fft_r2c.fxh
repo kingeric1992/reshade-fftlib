@@ -17,7 +17,7 @@
 #   error "undeined FFT_SRC_GET(x,y)"
 #endif
 #ifndef FFT_SRC_INV
-#   define FFT_SRC_GET
+#   define FFT_SRC_INV(a,b) FFT_SRC_GET(a,b)
 #endif
 
 #include "macro_common.fxh"
@@ -107,13 +107,68 @@ uint rBit( uint v, uint l ) {
 float2x2 twiddle( float k, float r ) {
     return sincos(-3.1415926*k/r,k,r), float2x2(r,k,-k,r); // cos, sin, -sin, cos
 }
+float atan2(float2 v) { return atan2(v.x,v.y); }
 
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 //  getters. get the result of either forward or inversed flow
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
-// forward declaration
-float2 get( int2 pos );
+//
+//  A[r]    = (HA[r]    + HA[h-r]*) *.5
+//  C[r]    = (HA[h-r]* - HA[r]) *.5 *i
+//
+//  Src Texture Layout:
+//
+//       posY  0.xy  ...  h/2-1  0.zw  ...  h/2-1
+//            ├────────────────┤├────────────────┤
+//        ID   0                 h/2
+//     ┬ posX ┌────────────────┐┌────────────────┐
+//     │  0   │  A[r] = (HA[r] + HA[h-r]*)*.5    │ HA
+//     │      ├────────────────┤├────────────────┤
+//     │      │                ││                │ <┐
+//     │      │       HB       ││       HB       │  │ Hermitian
+//     │      │                ││                │  │ symmatry on HB
+//     ┼      ├────────────────┤├────────────────┤  │ HB [k,r] = HB *[k,w-r]
+//     │ w/2  ¦  C[r] = (HA[h-r]* - HA[r])*.5i   ¦  │
+//     │      ¦················¦¦················¦  │
+//     │      ¦                ¦¦                ¦  │
+//     │      ¦      HB*       ¦¦       HB*      ¦  │
+//     │      ¦                ¦¦                ¦ <┘
+//     ┴      ····································
+//                                         HB[h-1, w-1] = HB*[h-1,1]
+//
+#if (FFT_SRC_POTY & 1)
+#   define sampBufV sampBufVB
+#else
+#   define sampBufV sampBufVA
+#endif
+// get fft (real, img) from buffer directly without additional pass
+// unpacked M x N ( instead of M x (N/2+1))
+float2 get( int2 pos ) {
+    int2 hSize = int2(FFT_SRC_SIZEX, FFT_SRC_SIZEY);
+
+    if ( any(pos < 0 || pos >= hSize))
+        return 0;
+
+    float4 p = float4(pos,hSize-pos);
+    hSize /= 2;
+
+    int3 sel = p.xyw / hSize.xyy; // x-> conj sel, y -> layer sel, z -> conj layer sel
+    p.yw %= hSize.y;              // wrap coord
+
+    [flatten]
+    if( pos.x == 0 || pos.x == hSize.x) { // on first or w/2 column
+        float4 H;
+        p.z  = 0;
+        H.xy = float2x2(tex2Dfetch(sampBufV, p.yxzz))[sel.y];
+        H.zw = float2x2(tex2Dfetch(sampBufV, p.wxzz))[sel.z], H.w = -H.w; // conj
+        return (pos.x? float2(H.z+H.y,H.w-H.x):(H.xy+H.zw))*.5;
+    }
+    p.w = 0;
+    float2 res = float2x2(tex2Dfetch(sampBufV, sel.x? p.yzww:p.yxww))[sel.y];
+    return float2(res.x, sel.x? -res.y:res.y); // conj
+}
+#undef  sampBufV
 float  amp( int2 pos)       { return length(get(pos)); }
 float  phase( int2 pos)     { return atan2(get(pos).yx); }
 // de-scramble sample
@@ -148,8 +203,8 @@ float4 ps_hori(float4 vpos ) {
     vpos.x  = rBit(vpos.x,   FFT_SRC_POTX);             // bitReverse( p1 )
     vpos.w  = vpos.y + 1;                               // odd row
     float4 c = float4(                                  // Even row on Real, Odd row on Img
-        SRC_GET(vpos.x,vpos.y), SRC_GET(vpos.x,vpos.w), //p0
-        SRC_GET(vpos.z,vpos.y), SRC_GET(vpos.z,vpos.w)  //p1
+        FFT_SRC_GET(vpos.x,vpos.y), FFT_SRC_GET(vpos.x,vpos.w), //p0
+        FFT_SRC_GET(vpos.z,vpos.y), FFT_SRC_GET(vpos.z,vpos.w)  //p1
     );
     //c.zw = mul(c.zw,twiddle(vpos.w%1,1));             // twiddle (always 1)
     return float4(c.xy+c.zw, c.xy-c.zw);                // butterfly
@@ -161,8 +216,8 @@ float4 ps_hori_inv(float4 vpos ) {
     vpos.y   = trunc(vpos.y);                           // n row
     vpos.w   = vpos.y + FFT_SRC_SIZEX*.5;               // n + h/2 row
     float4 c = float4(                                  // n row on Real, n + h/2 row row on Img
-        SRC_GET(vpos.x,vpos.y), SRC_GET(vpos.x,vpos.w), //p0
-        SRC_GET(vpos.z,vpos.y), SRC_GET(vpos.z,vpos.w)  //p1
+        FFT_SRC_GET(vpos.x,vpos.y), FFT_SRC_GET(vpos.x,vpos.w), //p0
+        FFT_SRC_GET(vpos.z,vpos.y), FFT_SRC_GET(vpos.z,vpos.w)  //p1
     );
     c    = float4( c.xy+c.zw, c.xy-c.zw);               // butterfly
     c.zw = mul(c.zw,twiddle(-(vpos.x%hw),hw));          // twiddle
@@ -234,62 +289,6 @@ float4 ps_vert_inv( sampler2D texIn, float4 vpos) {
     return c*.5;
 }
 
-//
-//  A[r]    = (HA[r]    + HA[h-r]*) *.5
-//  C[r]    = (HA[h-r]* - HA[r]) *.5 *i
-//
-//  Src Texture Layout:
-//
-//       posY  0.xy  ...  h/2-1  0.zw  ...  h/2-1
-//            ├────────────────┤├────────────────┤
-//        ID   0                 h/2
-//     ┬ posX ┌────────────────┐┌────────────────┐
-//     │  0   │  A[r] = (HA[r] + HA[h-r]*)*.5    │ HA
-//     │      ├────────────────┤├────────────────┤
-//     │      │                ││                │ <┐
-//     │      │       HB       ││       HB       │  │ Hermitian
-//     │      │                ││                │  │ symmatry on HB
-//     ┼      ├────────────────┤├────────────────┤  │ HB [k,r] = HB *[k,w-r]
-//     │ w/2  ¦  C[r] = (HA[h-r]* - HA[r])*.5i   ¦  │
-//     │      ¦················¦¦················¦  │
-//     │      ¦                ¦¦                ¦  │
-//     │      ¦      HB*       ¦¦       HB*      ¦  │
-//     │      ¦                ¦¦                ¦ <┘
-//     ┴      ····································
-//                                         HB[h-1, w-1] = HB*[h-1,1]
-//
-#if (FFT_SRC_POTY & 1)
-#   define sampBufV sampBufVB
-#else
-#   define sampBufV sampBufVA
-#endif
-// get fft (real, img) from buffer directly without additional pass
-// unpacked M x N ( instead of M x (N/2+1))
-float2 get( int2 pos ) {
-    int2 hSize = int2(FFT_SRC_SIZEX, FFT_SRC_SIZEY);
-
-    if ( any(pos < 0 || pos >= hSize))
-        return 0;
-
-    float4 p = float4(pos,hSize-pos);
-    hSize /= 2;
-
-    int3 sel = p.xyw / hSize.xyy; // x-> conj sel, y -> layer sel, z -> conj layer sel
-    p.yw %= hSize.y;              // wrap coord
-
-    [flatten]
-    if( pos.x == 0 || pos.x == hSize.x) { // on first or w/2 column
-        float4 H;
-        p.z  = 0;
-        H.xy = float2x2(tex2Dfetch(sampBufV, p.yxzz))[sel.y];
-        H.zw = float2x2(tex2Dfetch(sampBufV, p.wxzz))[sel.z], H.w = -H.w; // conj
-        return (pos.x? float2(H.z+H.y,H.w-H.x):(H.xy+H.zw))*.5;
-    }
-    p.w = 0;
-    float2 res = float2x2(tex2Dfetch(sampBufV, sel.x? p.yzww:p.yxww))[sel.y];
-    return float2(res.x, sel.x? -res.y:res.y); // conj
-}
-#undef  sampBufV
 
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 //  Pass Setup
@@ -312,7 +311,7 @@ float4 ps_ifft_BufHA0(float4 vpos : SV_POSITION) : SV_TARGET {return ps_hori_inv
 #   define sampBufH sampBufHA
 #endif
 float4 ps_fft_BufVA0 (float4 vpos : SV_POSITION) : SV_TARGET {return ps_vert(sampBufH,vpos);}
-float4 ps_ifft_BufVA0(float4 vpos : SV_POSITION) : SV_TARGET {return ps_vert_init(sampBufH,vpos);}
+float4 ps_ifft_BufVA0(float4 vpos : SV_POSITION) : SV_TARGET {return ps_vert_inv(sampBufH,vpos);}
 #undef sampBufH
 
 PS_FFT(BufHB,  1, FFT_SRC_POTX)  PS_FFT(BufVB,  1, FFT_SRC_POTY)

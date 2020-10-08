@@ -11,8 +11,8 @@
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 // setup the getter & input dimension for input matrix
-#define FFT_SRC_SIZEX       512
-#define FFT_SRC_SIZEY       512
+#define FFT_SRC_SIZEX       256
+#define FFT_SRC_SIZEY       256
 #define FFT_SRC_GET(_x, _y) (tex2Dfetch(sampSrc,int4(_x,_y,0,0)).x)
 #define FFT_SRC_INV(_x, _y) (get(vpos.xy)) // getter for inversed flow
 
@@ -33,26 +33,33 @@ sampler2D sampSrc   { Texture = texSrc; FILTER(POINT); };
 //  Shaders
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
+float norm( float u) { return log(u + 1)/log(100); }
+
 float4 vs_post( uint vid : SV_VERTEXID ) : SV_POSITION {
-    return float4((vid.xx == uint2(2,1)? float2(-3,3):float2(1,-1)), 0,1);
+    return float4((vid.xx == uint2(2,1)? float2(-3,3):float2(1,-1)),0,1);
 }
 float ps_mid( float4 vpos : SV_POSITION ) : SV_TARGET {
-    return fft_c2c::amp(vpos.xy); // forward result
+    vpos.zw  = float2(FFT_SRC_SIZEX, FFT_SRC_SIZEY)*.5;
+    vpos.xy += vpos.xy < vpos.zw ? vpos.zw : -vpos.zw;
+    return norm(fft_c2c::amp(vpos.xy)); // forward result
 }
 float ps_post( float4 vpos : SV_POSITION ) : SV_TARGET {
-    return fft_c2c::getInv(vpos.xy).r;
+    return norm(fft_c2c::amp(vpos.xy)); // forward result
+    //return fft_c2c::getInv(vpos.xy).r;
 }
 
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 //  Technique
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 // view real component of c2c result.
-technique fft_inversed_view {
+technique fft_c2c_forward_view {
     pass p0 {
         VertexShader    = vs_post;
-        PixelShader     = ps_post;
+        PixelShader     = ps_mid;
         RenderTarget    = texMid;
     }
+}
+technique fft_c2c_inverse_view {
     pass p1 {
         VertexShader    = vs_post;
         PixelShader     = ps_post;

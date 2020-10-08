@@ -17,7 +17,7 @@
 #   error "undefined FFT_SRC_GET(x,y)"
 #endif
 #ifndef FFT_SRC_INV
-#   define FFT_SRC_GET
+#   define FFT_SRC_INV(a,b) FFT_SRC_GET(a,b)
 #endif
 
 #include "macro_common.fxh"
@@ -108,13 +108,41 @@ uint rBit( uint v, uint l ) {
 float2x2 twiddle( float k, float r ) {
     return sincos(-3.1415926*k/r,k,r), float2x2(r,k,-k,r); // cos, sin, -sin, cos
 }
+float atan2(float2 v) { return atan2(v.x,v.y); }
+
+
 
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 //  getters. get the result of either forward or inversed flow
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
-// forward declaration
-float2 get( int2 pos );
+//  Src Texture Layout:
+//           vpos.y
+//   0 on .xy  ↓         h/2 on .zw
+//      ┌─────┬───┬──────┐┌─────────────────┐
+//      │     ¦   ¦                         │
+//      ├─────┼───┼──────┤├─────────────────┤
+//      │     │ p │                         │ <- vpos.x
+//      ├─────┼───┼──────┤├─────────────────┤
+//      │     ¦   ¦                         │
+//      │     ¦   ¦                         │
+//      │     ¦   ¦                         │
+//      │     ¦   ¦                         │
+//      │     ¦   ¦                         │
+//      └─────┴───┴──────┘└─────────────────┘
+//
+#if (FFT_SRC_POTY & 1)
+#   define sampBufV sampBufVB
+#else
+#   define sampBufV sampBufVA
+#endif
+// get fft (real, img) from buffer directly without additional pass
+float2 get( int2 pos ) {
+    float4 vpos = float4(pos,0,FFT_SRC_SIZEY*.5);
+    vpos.y %= vpos.w, pos.y /= vpos.w;
+    return float2x2(tex2Dfetch(sampBufV, vpos.yxzz))[pos.y];
+}
+#undef  sampBufV
 float  amp( int2 pos)       { return length(get(pos)); }
 float  phase( int2 pos)     { return atan2(get(pos).yx); }
 // de-scramble sample
@@ -210,33 +238,7 @@ float4 ps_vert_inv( sampler2D texIn, float4 vpos) {
     return c*.5;
 }
 
-//  Src Texture Layout:
-//           vpos.y
-//   0 on .xy  ↓         h/2 on .zw
-//      ┌─────┬───┬──────┐┌─────────────────┐
-//      │     ¦   ¦                         │
-//      ├─────┼───┼──────┤├─────────────────┤
-//      │     │ p │                         │ <- vpos.x
-//      ├─────┼───┼──────┤├─────────────────┤
-//      │     ¦   ¦                         │
-//      │     ¦   ¦                         │
-//      │     ¦   ¦                         │
-//      │     ¦   ¦                         │
-//      │     ¦   ¦                         │
-//      └─────┴───┴──────┘└─────────────────┘
-//
-#if (FFT_SRC_POTY & 1)
-#   define sampBufV sampBufVB
-#else
-#   define sampBufV sampBufVA
-#endif
-// get fft (real, img) from buffer directly without additional pass
-float2 get( int2 pos ) {
-    float4 vpos = float4(pos,0,FFT_SRC_SIZEY*.5);
-    vpos.y %= vpos.w, pos.y /= vpos.w;
-    return float2x2(tex2Dfetch(sampBufV, vpos.yxzz))[pos.y];
-}
-#undef  sampBufV
+
 
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 //  Pass Setup
@@ -244,9 +246,9 @@ float2 get( int2 pos ) {
 // ps ctor; < t: output buffer > < r: stage number (0 index) >
 #define PS_FFT( t, r, z ) \
 float4 ps_fft_##t##r  ( float4 vpos : SV_POSITION) : SV_TARGET { \
-    return ps_fft( samp##t, vpos, r); } \
+    return ps_fft     ( samp##t, vpos, r); } \
 float4 ps_ifft_##t##r ( float4 vpos : SV_POSITION) : SV_TARGET { \
-    return ps_fft_inv( samp##t, vpos, (z)-(r)-1); }
+    return ps_fft_inv ( samp##t, vpos, (z)-(r)-1); }
 
 // horizontal init pass
 float4 ps_fft_BufHA0  (float4 vpos : SV_POSITION) : SV_TARGET { return ps_hori(vpos); }
@@ -258,7 +260,7 @@ float4 ps_ifft_BufHA0 (float4 vpos : SV_POSITION) : SV_TARGET { return ps_hori_i
 #else
 #   define sampBufH sampBufHA
 #endif
-float4 ps_fft_BufVA0  (float4 vpos : SV_POSITION) : SV_TARGET {return ps_vert(sampBufH,vpos);}
+float4 ps_fft_BufVA0  (float4 vpos : SV_POSITION) : SV_TARGET {return ps_vert    (sampBufH,vpos);}
 float4 ps_ifft_BufVA0 (float4 vpos : SV_POSITION) : SV_TARGET {return ps_vert_inv(sampBufH,vpos);}
 #undef sampBufH
 
