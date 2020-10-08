@@ -74,17 +74,16 @@ sampler2D sampBufVB { Texture = texBufVA; FILTER(POINT); };
 
 // fetch sample by xPos
 // output pos -> sampleID -> input pos
-float2x2 tex2DfetchID( sampler2D texIn, float4 vpos, float r) {
+float4 tex2DfetchID( sampler2D texIn, float4 vpos, float r, float dir) {
     vpos.x += trunc(vpos.x/r)*r;
     int2 id = float2(vpos.x,vpos.x+r); // working id
 
     // access working id in src buffer
-    vpos.xw = trunc(id/r);
-    r      *= .5;
-    vpos.xw = vpos.xw*r + id%r;
+    r      *= dir; // src r. forward_dir = .5, inverse_dir = 2;
+    vpos.xw = trunc(id/(r*2))*r + id%r;
     id      = trunc(id/r) % 2;
 
-    return float2x2(
+    return float4(
         float2x2(tex2Dfetch(texIn, vpos.xyzz))[id.x],
         float2x2(tex2Dfetch(texIn, vpos.wyzz))[id.y]
     );
@@ -130,34 +129,44 @@ float4 vs_fft( uint vid : SV_VERTEXID ) : SV_POSITION {
     return float4((vid.xx == uint2(2,1)? float2(-3,3):float2(1,-1)), 0,1);
 }
 // main fft pass.
-float4 ps_fft( sampler2D texIn, int4 vpos, float r, int dir) {
-    float2x2 s = tex2DfetchID(texIn, vpos, r = exp2(r));
-    s[1] = mul(s[1],twiddle(dir*(vpos.x%r),r)); // implicit cmul
-    return float4(s[0]+s[1], s[0]-s[1]);
+float4 ps_fft( sampler2D texIn, int4 vpos, float r) {
+    float4 c = tex2DfetchID(texIn, vpos, r=exp2(r), .5);    // p0,p1
+    c.zw = mul(c.zw,twiddle(vpos.x%r,r));                   // twiddle
+    return float4(c.xy+c.zw, c.xy-c.zw);                    // butterfly
 }
+float4 ps_fft_inv( sampler2D texIn, int4 vpos, float r) {
+    float4 c = tex2DfetchID(texIn, vpos, r=exp2(r), 2);     // p0,p1
+           c = float4(c.xy+c.zw, c.xy-c.zw);                // butterfly
+    return c.zw = mul(c.zw,twiddle(-(vpos.x%r),r)), c*.5;   // twiddle
+}
+
 
 // r2c, two rows at once, ->  N/2 row, N column, horizontal N point complex FFT
 float4 ps_hori(float4 vpos ) {
-    vpos.xy = trunc(vpos.xy)*2;             // 0,1,2,...WH/2 -1 -> 0,2,4, ... WH -2
-    vpos.w  = rBit(vpos.x+1, FFT_SRC_POTX); // bitReverwe( p0 )
-    vpos.x  = rBit(vpos.x,   FFT_SRC_POTX); // bitReverwe( p1 )
-    vpos.z  = vpos.y + 1;                   // Second input node
-
-    float4 c;
-    c.x = (SRC_GET(vpos.x,vpos.y)), c.z = (SRC_GET(vpos.w,vpos.y)); // Even row on Real
-    c.y = (SRC_GET(vpos.x,vpos.z)), c.w = (SRC_GET(vpos.w,vpos.z)); // Odd row on img
-    return float4( c.xy+c.zw, c.xy-c.zw);
+    vpos.xy = trunc(vpos.xy)*2;                         // 0,1,2,...WH/2 -1 -> 0,2,4, ... WH -2
+    vpos.z  = rBit(vpos.x+1, FFT_SRC_POTX);             // bitReverse( p0 )
+    vpos.x  = rBit(vpos.x,   FFT_SRC_POTX);             // bitReverse( p1 )
+    vpos.w  = vpos.y + 1;                               // odd row
+    float4 c = float4(                                  // Even row on Real, Odd row on Img
+        SRC_GET(vpos.x,vpos.y), SRC_GET(vpos.x,vpos.w), //p0
+        SRC_GET(vpos.z,vpos.y), SRC_GET(vpos.z,vpos.w)  //p1
+    );
+    //c.zw = mul(c.zw,twiddle(vpos.w%1,1));             // twiddle (always 1)
+    return float4(c.xy+c.zw, c.xy-c.zw);                // butterfly
 }
+// inv r2c pack n & n+h/2 row together.
 float4 ps_hori_inv(float4 vpos ) {
-    vpos.xy = trunc(vpos.xy)*2;             // 0,1,2,...WH/2 -1 -> 0,2,4, ... WH -2
-    vpos.w  = rBit(vpos.x+1, FFT_SRC_POTX); // bitReverwe( p0 )
-    vpos.x  = rBit(vpos.x,   FFT_SRC_POTX); // bitReverwe( p1 )
-    vpos.z  = vpos.y + 1;                   // Second input node
-
-    float4 c;
-    c.x = (SRC_GET(vpos.x,vpos.y)), c.z = (SRC_GET(vpos.w,vpos.y)); // Even row on Real
-    c.y = (SRC_GET(vpos.x,vpos.z)), c.w = (SRC_GET(vpos.w,vpos.z)); // Odd row on img
-    return float4( c.xy+c.zw, c.xy-c.zw);
+    float hw = FFT_SRC_SIZEX*.5;
+    vpos.z   = vpos.x + hw;                             // p1 output index.
+    vpos.y   = trunc(vpos.y);                           // n row
+    vpos.w   = vpos.y + FFT_SRC_SIZEX*.5;               // n + h/2 row
+    float4 c = float4(                                  // n row on Real, n + h/2 row row on Img
+        SRC_GET(vpos.x,vpos.y), SRC_GET(vpos.x,vpos.w), //p0
+        SRC_GET(vpos.z,vpos.y), SRC_GET(vpos.z,vpos.w)  //p1
+    );
+    c    = float4( c.xy+c.zw, c.xy-c.zw);               // butterfly
+    c.zw = mul(c.zw,twiddle(-(vpos.x%hw),hw));          // twiddle
+    return c*.5;
 }
 
 //  (src buffer content)
@@ -205,31 +214,24 @@ float4 ps_vert( sampler2D texIn, float4 vpos) {
 }
 float4 ps_vert_inv( sampler2D texIn, float4 vpos) {
 
-    vpos.xy = trunc(vpos.xy);
-    vpos.x *= 2;                            // [0, h/2-1] * 2
-    vpos.w  = rBit(vpos.x+1, FFT_SRC_POTY); // src index for p1
-    vpos.x  = rBit(vpos.x,   FFT_SRC_POTY); // src index for p0
-    int sel = vpos.x % 2;                   // is accessed index on odd or even row.
-    vpos.xw = vpos.xw / 2;                  // (either both odd or even with bit reversed)
+    int4 sel;
+    float2 hs = float2(FFT_SRC_SIZEX,FFT_SRC_SIZEY)*.5;
+    vpos.x    = trunc(vpos.x);
+    sel.yz    = vpos.y;
+    sel.w     = FFT_SRC_SIZEX-sel.z;
 
     // vpos.y = [0, w/2-1] < src buffer size X
-    float4 X, cX;
-    X.xy = tex2Dfetch(texIn, vpos.yxzz).xy; // p0
-    X.zw = tex2Dfetch(texIn, vpos.ywzz).xy; // p1
-
-    // complex conjugate
-    vpos.y = (FFT_SRC_SIZEX - vpos.y) % (FFT_SRC_SIZEX*.5); // vpos.y = 0 -> 0
-    cX.xy  = tex2Dfetch(texIn, vpos.yxzz).zw; // p0*
-    cX.zw  = tex2Dfetch(texIn, vpos.ywzz).zw; // p1*
-    cX.yw  = -cX.yw;
-
-    // can't use float4x2
-    // even: (X+cX)*.5;  odd: i(cX-X) * .5
-    float4 p = int(vpos.y)?                     // if vpos.y = 0, pack id(0) & id(w/2)
-        (sel? float4(X.yw-cX.yw,cX.xz-X.xz) : (X.xzyw+cX.xzyw)) *.5 :
-        (sel? float4(X.yw,cX.yw) : float4(X.xz,cX.xz)); // wrap row w/2 into row 0
-
-    return float4(p.xz+p.yw,p.xz-p.yw)*.5;
+    float4 c;
+    sel.z = (vpos.y = rBit(sel.z,FFT_SRC_POTX))/hs.x, vpos.y %= hs.x;   // descramble input coord
+    c.xy  = float2x2(tex2Dfetch(texIn, vpos.yxzz))[sel.z];              // p0,p1
+    sel.w = (vpos.y = rBit(sel.w,FFT_SRC_POTX))/hs.x, vpos.y %= hs.x;   // complex conjugate
+    c.zw  = float2x2(tex2Dfetch(texIn, vpos.yxzz))[sel.y? sel.w:1];     // sel zw when vpos.y == 0
+    c.w   = -c.w;  // p0*,p1*.
+    // if vpos.y = 0, p0[0]=c.x, p1[0]=c.y; p0[w/2]=c.z, p1[w/2]=c.w;
+    c     = sel.y? float4(c.xy+c.zw,c.yz-c.wx)*.5: c.xzyw;              // p0: (X+cX)*.5;  p1: i(cX-X)*.5
+    c     = float4(c.xy+c.zw,c.xy-c.zw);                                // butterfly.
+    c.zw  = mul(c.zw,twiddle(-(vpos.x%hs.y),hs.y));                     // twiddle
+    return c*.5;
 }
 
 //
@@ -242,13 +244,13 @@ float4 ps_vert_inv( sampler2D texIn, float4 vpos) {
 //            ├────────────────┤├────────────────┤
 //        ID   0                 h/2
 //     ┬ posX ┌────────────────┐┌────────────────┐
-//     │  0   │    (HA[r]    + HA[h-r]*) *.5     │ HA
+//     │  0   │  A[r] = (HA[r] + HA[h-r]*)*.5    │ HA
 //     │      ├────────────────┤├────────────────┤
 //     │      │                ││                │ <┐
 //     │      │       HB       ││       HB       │  │ Hermitian
 //     │      │                ││                │  │ symmatry on HB
 //     ┼      ├────────────────┤├────────────────┤  │ HB [k,r] = HB *[k,w-r]
-//     │ w/2  ¦    (HA[h-r]* - HA[r]) *.5 *i     ¦  │
+//     │ w/2  ¦  C[r] = (HA[h-r]* - HA[r])*.5i   ¦  │
 //     │      ¦················¦¦················¦  │
 //     │      ¦                ¦¦                ¦  │
 //     │      ¦      HB*       ¦¦       HB*      ¦  │
@@ -295,9 +297,9 @@ float2 get( int2 pos ) {
 // ps ctor; < t: output buffer > < r: stage number (0 index) >
 #define PS_FFT( t, r, z ) \
 float4 ps_fft_##t##r( float4 vpos : SV_POSITION ) : SV_TARGET { \
-    return ps_fft( samp##t, vpos, r, 1 ); } \
+    return ps_fft( samp##t, vpos, r); } \
 float4 ps_ifft_##t##r( float4 vpos : SV_POSITION ) : SV_TARGET { \
-    return ps_fft( samp##t, vpos, (z)-(r), -1)*.5; }
+    return ps_fft_inv( samp##t, vpos, (z)-(r)-1); }
 
 // horizontal init pass
 float4 ps_fft_BufHA0 (float4 vpos : SV_POSITION) : SV_TARGET {return ps_hori(vpos);}

@@ -75,17 +75,16 @@ sampler2D sampBufVB { Texture = texBufVA; FILTER(POINT); };
 // fetch sample by xPos
 // output pos -> sampleID -> input pos
 // TODO: #1 varify inverse flow is properly configured
-float2x2 tex2DfetchID( sampler2D texIn, float4 vpos, float r) {
+float4 tex2DfetchID( sampler2D texIn, float4 vpos, float r, float dir) {
     vpos.x += trunc(vpos.x/r)*r;
     int2 id = float2(vpos.x,vpos.x+r); // working id
 
     // access working id in src buffer
-    vpos.xw = trunc(id/r);
-    r      *= .5;
-    vpos.xw = vpos.xw*r + id%r;
+    r      *= dir; // src r. forward_dir = .5, inverse_dir = 2;
+    vpos.xw = trunc(id/(r*2))*r + id%r;
     id      = trunc(id/r) % 2;
 
-    return float2x2(
+    return float4(
         float2x2(tex2Dfetch(texIn, vpos.xyzz))[id.x],
         float2x2(tex2Dfetch(texIn, vpos.wyzz))[id.y]
     );
@@ -131,21 +130,28 @@ float4 vs_fft( uint vid : SV_VERTEXID ) : SV_POSITION {
     return float4((vid.xx == uint2(2,1)? float2(-3,3):float2(1,-1)), 0,1);
 }
 // main fft pass.
-float4 ps_fft( sampler2D texIn, int4 vpos, float r, int dir) {
-    float2x2 s = tex2DfetchID(texIn, vpos, r = exp2(r));
-    s[1] = mul(s[1],twiddle(dir*(vpos.x%r),r)); // implicit cmul
-    return float4(s[0]+s[1], s[0]-s[1]);
+float4 ps_fft( sampler2D texIn, int4 vpos, float r) {
+    float4 c = tex2DfetchID(texIn, vpos, r=exp2(r),.5); // p0,p1
+    c.zw = mul(c.zw,twiddle(vpos.x%r,r));               // twiddle
+    return float4(c.xy+c.zw, c.xy-c.zw);                // butterfly
 }
+float4 ps_fft_inv( sampler2D texIn, int4 vpos, float r) {
+    float4 c = tex2DfetchID(texIn, vpos, r=exp2(r), 2); // p0,p1
+           c = float4(c.xy+c.zw, c.xy-c.zw);            // butterfly
+    return c.zw = mul(c.zw,twiddle(-(vpos.x%r),r)),c*.5;// twiddle
+}
+
 
 // c2c first pass
 float4 ps_hori(float4 vpos ) {
     vpos.x  = trunc(vpos.x)*2;
-    vpos.w  = rBit(vpos.x+1, FFT_SRC_POTX); // bitReverwe( p0 )
-    vpos.x  = rBit(vpos.x,   FFT_SRC_POTX); // bitReverwe( p1 )
+    vpos.w  = rBit(vpos.x+1, FFT_SRC_POTX); // bitReverse( o0 ) = p0
+    vpos.x  = rBit(vpos.x,   FFT_SRC_POTX); // bitReverse( o1 ) = p1
     float4 c;
-    c.xy = (FFT_SRC_GET(vpos.x,vpos.y));
-    c.zw = (FFT_SRC_GET(vpos.w,vpos.y));
-    return float4( c.xy+c.zw, c.xy-c.zw);
+    c.xy = (FFT_SRC_GET(vpos.x,vpos.y));    // p0
+    c.zw = (FFT_SRC_GET(vpos.w,vpos.y));    // p1
+    //c.zw = mul(c.zw,twiddle(vpos.x%1,1)); // twiddle (always 1)
+    return float4( c.xy+c.zw, c.xy-c.zw);   // butterfly
 }
 float4 ps_hori_inv(float4 vpos ) {
     vpos.x  = trunc(vpos.x)*2;
@@ -154,8 +160,9 @@ float4 ps_hori_inv(float4 vpos ) {
     float4 c;
     c.xy = (FFT_SRC_INV(vpos.x,vpos.y));
     c.zw = (FFT_SRC_INV(vpos.w,vpos.y));
-    c.zw = mul(c.zw,twiddle(-(vpos.x % vpos.z),vpos.z))
-    return float4(c.xy+c.zw, c.xy-c.zw)*.5;
+    c    = float4(c.xy+c.zw, c.xy-c.zw);
+    c.zw = mul(c.zw,twiddle(-(vpos.x%vpos.z),vpos.z));
+    return c*.5;
 }
 
 
@@ -176,8 +183,8 @@ float4 ps_hori_inv(float4 vpos ) {
 //
 float4 ps_vert( sampler2D texIn, float4 vpos) {
     vpos.x  = trunc(vpos.x)*2;
-    vpos.w  = rBit(vpos.x+1, FFT_SRC_POTY); // src index for p1
-    vpos.x  = rBit(vpos.x,   FFT_SRC_POTY); // src index for p0
+    vpos.w  = rBit(vpos.x+1, FFT_SRC_POTY);             // src index for p1
+    vpos.x  = rBit(vpos.x,   FFT_SRC_POTY);             // src index for p0
 
     int hh = (FFT_SRC_SIZEX*.5), sel = vpos.y / hh;
     vpos.y %= hh;
@@ -188,18 +195,19 @@ float4 ps_vert( sampler2D texIn, float4 vpos) {
     return float4(p.xy+p.zw,p.xy-p.zw);
 }
 float4 ps_vert_inv( sampler2D texIn, float4 vpos) {
-    vpos.x  = trunc(vpos.x);                // [0, h/2-1]
-    vpos.y  = rBit(vpos.y, FFT_SRC_POTX);   // de-scramble sample
+    vpos.x  = trunc(vpos.x);                            // [0, h/2-1]
+    vpos.y  = rBit(vpos.y, FFT_SRC_POTX);               // de-scramble sample
 
     int hh = (FFT_SRC_SIZEX*.5), hw = (FFT_SRC_SIZEY*.5), sel = vpos.y / hh;
     vpos.y %= hh;
     vpos.w  = vpos.x+hw;
 
-    float4 p;
-    p.xy = float2x2(tex2Dfetch(texIn, vpos.yxzz))[sel]; // p0
-    p.zw = float2x2(tex2Dfetch(texIn, vpos.ywzz))[sel]; // p1
-    p.zw = mul(p.zw,twiddle(-(vpos.x % hw),hw))
-    return float4(p.xy+p.zw,p.xy-p.zw)*.5;
+    float4 c;
+    c.xy = float2x2(tex2Dfetch(texIn, vpos.yxzz))[sel]; // p0
+    c.zw = float2x2(tex2Dfetch(texIn, vpos.ywzz))[sel]; // p1
+    c    = float4(c.xy+c.zw,c.xy-c.zw);                 // butterfly
+    c.zw = mul(c.zw,twiddle(-(vpos.x%hw),hw));          // twiddle
+    return c*.5;
 }
 
 //  Src Texture Layout:
@@ -236,9 +244,9 @@ float2 get( int2 pos ) {
 // ps ctor; < t: output buffer > < r: stage number (0 index) >
 #define PS_FFT( t, r, z ) \
 float4 ps_fft_##t##r  ( float4 vpos : SV_POSITION) : SV_TARGET { \
-    return ps_fft( samp##t, vpos, r, 1); } \
+    return ps_fft( samp##t, vpos, r); } \
 float4 ps_ifft_##t##r ( float4 vpos : SV_POSITION) : SV_TARGET { \
-    return ps_fft( samp##t, vpos, (z)-(r), -1)*.5; }
+    return ps_fft_inv( samp##t, vpos, (z)-(r)-1); }
 
 // horizontal init pass
 float4 ps_fft_BufHA0  (float4 vpos : SV_POSITION) : SV_TARGET { return ps_hori(vpos); }
