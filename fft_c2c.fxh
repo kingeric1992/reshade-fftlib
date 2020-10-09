@@ -110,8 +110,6 @@ float2x2 twiddle( float k, float r ) {
 }
 float atan2(float2 v) { return atan2(v.x,v.y); }
 
-
-
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 //  getters. get the result of either forward or inversed flow
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -140,13 +138,13 @@ float atan2(float2 v) { return atan2(v.x,v.y); }
 float2 get( int2 pos ) {
     float4 vpos = float4(pos,0,FFT_SRC_SIZEY*.5);
     vpos.y %= vpos.w, pos.y /= vpos.w;
-    return float2x2(tex2Dfetch(sampBufV, vpos.yxzz))[pos.y];
+    return float2x2(tex2Dfetch(sampBufV,vpos.yxzz))[pos.y];
 }
 #undef  sampBufV
 float  amp( int2 pos)       { return length(get(pos)); }
 float  phase( int2 pos)     { return atan2(get(pos).yx); }
 // de-scramble sample
-float2 getInv(int2 pos)     { return pos.y = rBit(pos.y, FFT_SRC_POTY), get(pos); }
+float2 getInv(int2 pos)     { return get(pos).yx; }
 float  ampInv( int2 pos)    { return length(getInv(pos)); }
 float  phaseInv( int2 pos)  { return atan2(getInv(pos).yx); }
 
@@ -163,12 +161,6 @@ float4 ps_fft( sampler2D texIn, int4 vpos, float r) {
     c.zw = mul(c.zw,twiddle(vpos.x%r,r));               // twiddle
     return float4(c.xy+c.zw, c.xy-c.zw);                // butterfly
 }
-float4 ps_fft_inv( sampler2D texIn, int4 vpos, float r) {
-    float4 c = tex2DfetchID(texIn, vpos, r=exp2(r), 2); // p0,p1
-           c = float4(c.xy+c.zw, c.xy-c.zw);            // butterfly
-    return c.zw = mul(c.zw,twiddle(-(vpos.x%r),r)),c*.5;// twiddle
-}
-
 
 // c2c first pass
 float4 ps_hori(float4 vpos ) {
@@ -183,16 +175,14 @@ float4 ps_hori(float4 vpos ) {
 }
 float4 ps_hori_inv(float4 vpos ) {
     vpos.x  = trunc(vpos.x)*2;
-    vpos.z  = FFT_SRC_SIZEX*.5;
-    vpos.w  = vpos.x+vpos.z;
+    vpos.w  = rBit(vpos.x+1, FFT_SRC_POTX); // bitReverse( o0 ) = p0
+    vpos.x  = rBit(vpos.x,   FFT_SRC_POTX); // bitReverse( o1 ) = p1
     float4 c;
-    c.xy = (FFT_SRC_INV(vpos.x,vpos.y));
-    c.zw = (FFT_SRC_INV(vpos.w,vpos.y));
-    c    = float4(c.xy+c.zw, c.xy-c.zw);
-    c.zw = mul(c.zw,twiddle(-(vpos.x%vpos.z),vpos.z));
-    return c*.5;
+    c.xy = (FFT_SRC_INV(vpos.x,vpos.y)).yx; // p0
+    c.zw = (FFT_SRC_INV(vpos.w,vpos.y)).yx; // p1
+    //c.zw = mul(c.zw,twiddle(vpos.x%1,1)); // twiddle (always 1)
+    return float4( c.xy+c.zw, c.xy-c.zw)*.5; // butterfly
 }
-
 
 //  (src buffer content)
 //           vpos.y
@@ -222,46 +212,26 @@ float4 ps_vert( sampler2D texIn, float4 vpos) {
     p.zw = float2x2(tex2Dfetch(texIn, vpos.ywzz))[sel]; // p1
     return float4(p.xy+p.zw,p.xy-p.zw);
 }
-float4 ps_vert_inv( sampler2D texIn, float4 vpos) {
-    vpos.x  = trunc(vpos.x);                            // [0, h/2-1]
-    vpos.y  = rBit(vpos.y, FFT_SRC_POTX);               // de-scramble sample
-
-    int hh = (FFT_SRC_SIZEX*.5), hw = (FFT_SRC_SIZEY*.5), sel = vpos.y / hh;
-    vpos.y %= hh;
-    vpos.w  = vpos.x+hw;
-
-    float4 c;
-    c.xy = float2x2(tex2Dfetch(texIn, vpos.yxzz))[sel]; // p0
-    c.zw = float2x2(tex2Dfetch(texIn, vpos.ywzz))[sel]; // p1
-    c    = float4(c.xy+c.zw,c.xy-c.zw);                 // butterfly
-    c.zw = mul(c.zw,twiddle(-(vpos.x%hw),hw));          // twiddle
-    return c*.5;
-}
-
-
 
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 //  Pass Setup
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 // ps ctor; < t: output buffer > < r: stage number (0 index) >
 #define PS_FFT( t, r, z ) \
-float4 ps_fft_##t##r  ( float4 vpos : SV_POSITION) : SV_TARGET { \
-    return ps_fft     ( samp##t, vpos, r); } \
-float4 ps_ifft_##t##r ( float4 vpos : SV_POSITION) : SV_TARGET { \
-    return ps_fft_inv ( samp##t, vpos, (z)-(r)-1); }
+float4 ps_fft_##t##r  ( float4 vpos : SV_POSITION) : SV_TARGET { return ps_fft( samp##t, vpos, r); } \
+float4 ps_ifft_##t##r ( float4 vpos : SV_POSITION) : SV_TARGET { return ps_fft( samp##t, vpos, r)*.5; }
 
 // horizontal init pass
-float4 ps_fft_BufHA0  (float4 vpos : SV_POSITION) : SV_TARGET { return ps_hori(vpos); }
-float4 ps_ifft_BufHA0 (float4 vpos : SV_POSITION) : SV_TARGET { return ps_hori_inv(vpos); }
-
+float4 ps_fft_BufHA0  ( float4 vpos : SV_POSITION) : SV_TARGET { return ps_hori(vpos); }
+float4 ps_ifft_BufHA0 ( float4 vpos : SV_POSITION) : SV_TARGET { return ps_hori_inv(vpos); }
 // vertical init pass
 #if (FFT_SRC_POTX & 1)
 #   define sampBufH sampBufHB
 #else
 #   define sampBufH sampBufHA
 #endif
-float4 ps_fft_BufVA0  (float4 vpos : SV_POSITION) : SV_TARGET {return ps_vert    (sampBufH,vpos);}
-float4 ps_ifft_BufVA0 (float4 vpos : SV_POSITION) : SV_TARGET {return ps_vert_inv(sampBufH,vpos);}
+float4 ps_fft_BufVA0  (float4 vpos : SV_POSITION) : SV_TARGET {return ps_vert(sampBufH,vpos);}
+float4 ps_ifft_BufVA0 (float4 vpos : SV_POSITION) : SV_TARGET {return ps_vert(sampBufH,vpos)*.5;}
 #undef sampBufH
 
 // intermediate passes

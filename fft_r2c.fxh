@@ -28,7 +28,6 @@ namespace fft_r2c {
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 //  setup
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-
 #define FFT_SRC_POTX CONST_LOG2(FFT_SRC_SIZEX)
 #define FFT_SRC_POTY CONST_LOG2(FFT_SRC_SIZEY)
 
@@ -172,7 +171,7 @@ float2 get( int2 pos ) {
 float  amp( int2 pos)       { return length(get(pos)); }
 float  phase( int2 pos)     { return atan2(get(pos).yx); }
 // de-scramble sample
-float2 getInv(int2 pos)     { return pos.y = rBit(pos.y, FFT_SRC_POTY), get(pos); }
+float2 getInv(int2 pos)     { return get(pos).yx; }
 float  ampInv( int2 pos)    { return length(getInv(pos)); }
 float  phaseInv( int2 pos)  { return atan2(getInv(pos).yx); }
 
@@ -189,12 +188,6 @@ float4 ps_fft( sampler2D texIn, int4 vpos, float r) {
     c.zw = mul(c.zw,twiddle(vpos.x%r,r));                   // twiddle
     return float4(c.xy+c.zw, c.xy-c.zw);                    // butterfly
 }
-float4 ps_fft_inv( sampler2D texIn, int4 vpos, float r) {
-    float4 c = tex2DfetchID(texIn, vpos, r=exp2(r), 2);     // p0,p1
-           c = float4(c.xy+c.zw, c.xy-c.zw);                // butterfly
-    return c.zw = mul(c.zw,twiddle(-(vpos.x%r),r)), c*.5;   // twiddle
-}
-
 
 // r2c, two rows at once, ->  N/2 row, N column, horizontal N point complex FFT
 float4 ps_hori(float4 vpos ) {
@@ -209,19 +202,17 @@ float4 ps_hori(float4 vpos ) {
     //c.zw = mul(c.zw,twiddle(vpos.w%1,1));             // twiddle (always 1)
     return float4(c.xy+c.zw, c.xy-c.zw);                // butterfly
 }
-// inv r2c pack n & n+h/2 row together.
 float4 ps_hori_inv(float4 vpos ) {
-    float hw = FFT_SRC_SIZEX*.5;
-    vpos.z   = vpos.x + hw;                             // p1 output index.
-    vpos.y   = trunc(vpos.y);                           // n row
-    vpos.w   = vpos.y + FFT_SRC_SIZEX*.5;               // n + h/2 row
-    float4 c = float4(                                  // n row on Real, n + h/2 row row on Img
+    vpos.xy = trunc(vpos.xy)*2;                         // 0,1,2,...WH/2 -1 -> 0,2,4, ... WH -2
+    vpos.z  = rBit(vpos.x+1, FFT_SRC_POTX);             // bitReverse( p0 )
+    vpos.x  = rBit(vpos.x,   FFT_SRC_POTX);             // bitReverse( p1 )
+    vpos.w  = vpos.y + 1;                               // odd row
+    float4 c = float4(                                  // Even row on Real, Odd row on Img
         FFT_SRC_GET(vpos.x,vpos.y), FFT_SRC_GET(vpos.x,vpos.w), //p0
         FFT_SRC_GET(vpos.z,vpos.y), FFT_SRC_GET(vpos.z,vpos.w)  //p1
     );
-    c    = float4( c.xy+c.zw, c.xy-c.zw);               // butterfly
-    c.zw = mul(c.zw,twiddle(-(vpos.x%hw),hw));          // twiddle
-    return c*.5;
+    //c.zw = mul(c.zw,twiddle(vpos.w%1,1));             // twiddle (always 1)
+    return float4(c.yx+c.wz, c.yx-c.wz)*.5;             // butterfly
 }
 
 //  (src buffer content)
