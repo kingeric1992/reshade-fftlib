@@ -11,8 +11,8 @@ float2 shift(float2 vpos, float2 c) { return vpos += vpos<c? c:-c; }
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 // setup the getter & input dimension for input matrix
-#define FFT_SRC_SIZEX       2048
-#define FFT_SRC_SIZEY       2048
+#define FFT_SRC_SIZEX       256
+#define FFT_SRC_SIZEY       256
 
 texture2D texSrc    < source  ="lena.png"; >
                     { Width = FFT_SRC_SIZEX; Height = FFT_SRC_SIZEY; Format = R8; };    // src  tex
