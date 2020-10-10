@@ -7,8 +7,8 @@
 //
 //                                              Oct.3.2020 by kingeric1992
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-#ifndef _FFT_R2C_FXH_
-#define _FFT_R2C_FXH_
+#ifndef _FFT_C2R_FXH_
+#define _FFT_C2R_FXH_
 #error "C2R work-in-progress"
 
 
@@ -28,7 +28,7 @@
 #include "macro_common.fxh"
 #include "macro_bitop.fxh"
 
-namespace fft_r2c {
+namespace fft_c2r {
 
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 //  setup
