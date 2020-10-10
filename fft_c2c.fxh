@@ -247,7 +247,7 @@ PS_FFT(BufHB,  9, FFT_SRC_POTX)   PS_FFT(BufVB,  9, FFT_SRC_POTY)
 PS_FFT(BufHA, 10, FFT_SRC_POTX)   PS_FFT(BufVA, 10, FFT_SRC_POTY)
 PS_FFT(BufHB, 11, FFT_SRC_POTX)   PS_FFT(BufVB, 11, FFT_SRC_POTY)
 PS_FFT(BufHA, 12, FFT_SRC_POTX)   PS_FFT(BufVA, 12, FFT_SRC_POTY)
-
+#undef PS_FFT
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 //  technique
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -258,9 +258,9 @@ PS_FFT(BufHA, 12, FFT_SRC_POTX)   PS_FFT(BufVA, 12, FFT_SRC_POTY)
 #define PASS_FFT(t,r)   VertexShader=vs_fft; PixelShader=ps_fft_##t##r;  RenderTarget=tex##t
 #define PASS_IFFT(t,r)  VertexShader=vs_fft; PixelShader=ps_ifft_##t##r; RenderTarget=tex##t
 
+#ifdef FFT_USE_FORWARD
 //compile-time resolve pass layout
 technique forward {
-
 #   define EVAL_EXP FFT_SRC_POTX
 #   include "macro_eval.fxh"   // evaluate preprocessor expression
     COND_PASS( hori, PASS_FFT, BufHA,  0, EVAL_RES) // ps_fft_BufHA0
@@ -297,6 +297,9 @@ technique forward {
 #   undef   EVAL_RES
 #   undef   EVAL_EXP
 }
+#undef FFT_USE_FORWARD
+#endif
+#ifdef FFT_USE_INVERSE
 technique inverse {
 
 #   define EVAL_EXP FFT_SRC_POTX
@@ -335,5 +338,14 @@ technique inverse {
 #   undef   EVAL_RES
 #   undef   EVAL_EXP
 }
+#undef FFT_USE_INVERSE
+#endif
 } // fft_c2c
+// clean up
+#undef COND_PASS
+#undef PASS_FFT
+#undef PASS_IFFT
+#undef FFT_SRC_POTX
+#undef FFT_SRC_POTY
+
 #endif // _FFT_C2C_FXH_

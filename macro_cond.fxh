@@ -1,5 +1,5 @@
 #ifndef _MACRO_COND_
-#define _MACRO_COND)
+#define _MACRO_COND_
 
 #define COND( a, m, id) COND_##m##_##id  ( a )
 
