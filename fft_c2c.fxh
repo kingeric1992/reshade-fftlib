@@ -35,6 +35,9 @@ namespace fft_c2c {
 texture2D texBufHA  { Width = FFT_SRC_SIZEX / 2; Height = FFT_SRC_SIZEY; Format = RGBA32F; };
 texture2D texBufHB  { Width = FFT_SRC_SIZEX / 2; Height = FFT_SRC_SIZEY; Format = RGBA32F; };
 
+// horizontal FFT result. (debug)
+//texture2D texView   { Width = FFT_SRC_SIZEX; Height = FFT_SRC_SIZEY; Format = RG32F; };
+
 // we can ditch these if we use verticle fft instead of transpose the input
 texture2D texBufVA  { Width = FFT_SRC_SIZEY / 2; Height = FFT_SRC_SIZEX; Format = RGBA32F; };
 texture2D texBufVB  { Width = FFT_SRC_SIZEY / 2; Height = FFT_SRC_SIZEX; Format = RGBA32F; };
@@ -183,7 +186,11 @@ float4 ps_hori_inv(float4 vpos ) {
     //c.zw = mul(c.zw,twiddle(vpos.x%1,1)); // twiddle (always 1)
     return float4( c.xy+c.zw, c.xy-c.zw)*.5; // butterfly
 }
-
+float2 ps_hori_view( sampler2D texIn, float4 vpos) {
+    vpos.w = vpos.x;
+    vpos.x %= FFT_SRC_SIZEX*.5;
+    return float2x2(tex2Dfetch(texIn,vpos.xyzz))[vpos.w > FFT_SRC_SIZEX*.5];
+}
 //  (src buffer content)
 //           vpos.y
 //   0 on .xy   ↓         w/2 on .zw
@@ -230,8 +237,9 @@ float4 ps_ifft_BufHA0 ( float4 vpos : SV_POSITION) : SV_TARGET { return ps_hori_
 #else
 #   define sampBufH sampBufHA
 #endif
-float4 ps_fft_BufVA0  (float4 vpos : SV_POSITION) : SV_TARGET {return ps_vert(sampBufH,vpos);}
-float4 ps_ifft_BufVA0 (float4 vpos : SV_POSITION) : SV_TARGET {return ps_vert(sampBufH,vpos)*.5;}
+float2 ps_fft_view    (float4 vpos : SV_POSITION) : SV_TARGET { return ps_hori_view(sampBufH,vpos); }
+float4 ps_fft_BufVA0  (float4 vpos : SV_POSITION) : SV_TARGET { return ps_vert(sampBufH,vpos);}
+float4 ps_ifft_BufVA0 (float4 vpos : SV_POSITION) : SV_TARGET { return ps_vert(sampBufH,vpos)*.5;}
 #undef sampBufH
 
 // intermediate passes
@@ -278,6 +286,12 @@ technique forward {
     COND_PASS( hori, PASS_FFT, BufHA, 12, EVAL_RES) // 8192
 #   undef   EVAL_RES
 #   undef   EVAL_EXP
+
+    // pass view {
+    //     VertexShader = vs_fft;
+    //     PixelShader  = ps_fft_view;
+    //     RenderTarget = texView;
+    // }
 
 #   define  EVAL_EXP FFT_SRC_POTY
 #   include "macro_eval.fxh"

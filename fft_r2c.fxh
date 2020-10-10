@@ -34,6 +34,9 @@ namespace fft_r2c {
 texture2D texBufHA  { Width = FFT_SRC_SIZEX / 2; Height = FFT_SRC_SIZEY / 2; Format = RGBA32F; };
 texture2D texBufHB  { Width = FFT_SRC_SIZEX / 2; Height = FFT_SRC_SIZEY / 2; Format = RGBA32F; };
 
+// horizontal FFT result. (debug)
+//texture2D texView   { Width = FFT_SRC_SIZEX; Height = FFT_SRC_SIZEY; Format = RG32F; };
+
 // we can ditch these if we use verticle fft instead of transpose the input
 texture2D texBufVA  { Width = FFT_SRC_SIZEY / 2; Height = FFT_SRC_SIZEX / 2; Format = RGBA32F; };
 texture2D texBufVB  { Width = FFT_SRC_SIZEY / 2; Height = FFT_SRC_SIZEX / 2; Format = RGBA32F; };
@@ -149,20 +152,20 @@ float2 get( int2 pos ) {
     if ( any(pos < 0 || pos >= hSize))
         return 0;
 
-    float4 p = float4(pos,hSize-pos); // z <- [w,w/2+1], w <- [h,h/2+1]
+    float4 p = float4(pos,hSize-pos); // z <- [w,1], w <- [h,1]
+    p.zw  %= hSize;
     hSize /= 2;
 
     int3 sel = p.ywx / hSize.yyx; // x -> layer sel, y -> conj layer sel, z-> conj sel
-    p.yw %= hSize.y;               // wrap coord
+    p.yw %= hSize.y;              // wrap coord
 
-    //[flatten]
-    [branch]
+    [flatten]
     if( pos.x == 0 || pos.x == hSize.x) { // on first or w/2 column
         float4 H;
         p.z  = 0;
-        H.xy = float2x2(tex2Dfetch(sampBufV, p.yxzz))[sel.x];
-        H.zw = float2x2(tex2Dfetch(sampBufV, p.wxzz))[sel.y], H.w = -H.w; // conj
-        return (pos.x? float2(H.z+H.y,H.w-H.x):(H.xy+H.zw))*.5;
+        H.xy = float2x2(tex2Dfetch(sampBufV, p.yzzz))[sel.x];
+        H.zw = float2x2(tex2Dfetch(sampBufV, p.wzzz))[sel.y], H.w = -H.w; // conj
+        return (pos.x? (H.yz-H.wx):(H.xy+H.zw))*.5;
     }
     // conj symatry X[w-u,h-v] = X*[u,v]
     float2 res = float2x2(tex2Dfetch(sampBufV,int4(sel.z? p.wz:p.yx,0,0)))[sel[sel.z*(p.w>.5)]];
@@ -193,11 +196,11 @@ float4 ps_fft( sampler2D texIn, int4 vpos, float r) {
 // r2c, two rows at once, ->  N/2 row, N column, horizontal N point complex FFT
 float4 ps_hori(float4 vpos ) {
     vpos.xy = trunc(vpos.xy)*2;                         // xy = (m,n)*2, m <- [0,w/2-1], n <- [0,h/2-1]
-    vpos.z  = rBit(vpos.x+1, FFT_SRC_POTX);             // bitReverse( p0 )
-    vpos.x  = rBit(vpos.x,   FFT_SRC_POTX);             // bitReverse( p1 )
+    vpos.z  = rBit(vpos.x+1, FFT_SRC_POTX);             // bitReverse( p1 )
+    vpos.x  = rBit(vpos.x,   FFT_SRC_POTX);             // bitReverse( p0 )
     vpos.w  = vpos.y + 1;                               // odd row
     float4 c = float4(                                  // Even row on Real, Odd row on Img
-        (FFT_SRC_GET(vpos.x,vpos.y)).x, (FFT_SRC_GET(vpos.x,vpos.w)).x, //p0
+        (FFT_SRC_GET(vpos.x,vpos.y)).x, (FFT_SRC_GET(vpos.x,vpos.w)).x, //p0, x:even,
         (FFT_SRC_GET(vpos.z,vpos.y)).x, (FFT_SRC_GET(vpos.z,vpos.w)).x  //p1
     );
     //c.zw = mul(c.zw,twiddle(vpos.w%1,1));             // twiddle (always 1)
@@ -215,7 +218,22 @@ float4 ps_hori_inv(float4 vpos ) {
     //c.zw = mul(c.zw,twiddle(vpos.w%1,1));             // twiddle (always 1)
     return float4(c.yx+c.wz, c.yx-c.wz)*.5;             // butterfly
 }
+float2 ps_hori_view( sampler2D texIn, float4 vpos) {
+    vpos.xy = trunc(vpos.xy);
+    vpos.z  = (FFT_SRC_SIZEX - vpos.x) % FFT_SRC_SIZEX; // conj index
+    vpos.w  = 0;
 
+    int4 sel;
+    sel.y    = vpos.y % 2; // odd/even row.
+    sel.xz   = vpos.xz / (FFT_SRC_SIZEX*.5);
+    vpos.xz %= FFT_SRC_SIZEX*.5;
+    vpos.y  /= 2;
+
+    float4 c;
+    c.xy = float2x2(tex2Dfetch(texIn,vpos.xyww))[sel.x];
+    c.zw = float2x2(tex2Dfetch(texIn,vpos.zyww))[sel.z], c.w = -c.w;
+    return float2x2(c.xy+c.zw,c.yz-c.wx)[sel.y]*.5;
+}
 //  (src buffer content)
 //           vpos.y                   w - vpos.y
 //   0 on .xy   ↓         w/2 on .zw      ↓
@@ -254,8 +272,8 @@ float4 ps_vert( sampler2D texIn, float4 vpos) {
     // can't use float4x2
     // even: (X+cX)*.5;  odd: i(cX-X) * .5
     float4 p = int(vpos.y)?                     // if vpos.y = 0, pack id(0) & id(w/2)
-        (sel? float4(X.yw-cX.yw,cX.xz-X.xz) : (X.xzyw+cX.xzyw)) *.5 :
-        (sel? float4(X.yw,cX.yw) : float4(X.xz,cX.xz)); // wrap row w/2 into row 0
+        (sel? float4(X.yw-cX.yw,cX.xz-X.xz) : (X.xzyw+cX.xzyw))*.5 :
+        (sel? float4(X.yw,-cX.yw) : float4(X.xz,cX.xz)); // wrap row w/2 into row 0
 
     return float4(p.xz+p.yw,p.xz-p.yw);
 }
@@ -293,15 +311,15 @@ float4 ps_ifft_##t##r( float4 vpos : SV_POSITION ) : SV_TARGET { return ps_fft( 
 // horizontal init pass
 float4 ps_fft_BufHA0 ( float4 vpos : SV_POSITION) : SV_TARGET { return ps_hori(vpos);}
 float4 ps_ifft_BufHA0( float4 vpos : SV_POSITION) : SV_TARGET { return ps_hori_inv(vpos);}
-
 // vertical init pass
 #if (FFT_SRC_POTX & 1)
 #   define sampBufH sampBufHB
 #else
 #   define sampBufH sampBufHA
 #endif
-float4 ps_fft_BufVA0 ( float4 vpos : SV_POSITION) : SV_TARGET {return ps_vert(sampBufH,vpos);}
-float4 ps_ifft_BufVA0( float4 vpos : SV_POSITION) : SV_TARGET {return ps_vert(sampBufH,vpos)*.5;}
+float2 ps_fft_view(    float4 vpos : SV_POSITION) : SV_TARGET { return ps_hori_view(sampBufH,vpos); }
+float4 ps_fft_BufVA0 ( float4 vpos : SV_POSITION) : SV_TARGET { return ps_vert(sampBufH,vpos);}
+float4 ps_ifft_BufVA0( float4 vpos : SV_POSITION) : SV_TARGET { return ps_vert(sampBufH,vpos)*.5;}
 #undef sampBufH
 
 PS_FFT(BufHB,  1, FFT_SRC_POTX)  PS_FFT(BufVB,  1, FFT_SRC_POTY)
@@ -347,6 +365,12 @@ technique forward {
     COND_PASS( hori, PASS_FFT, BufHA, 12, EVAL_RES) // 8192
 #   undef   EVAL_RES
 #   undef   EVAL_EXP
+
+    // pass view {
+    //     VertexShader = vs_fft;
+    //     PixelShader  = ps_fft_view;
+    //     RenderTarget = texView;
+    // }
 
 #   define  EVAL_EXP FFT_SRC_POTY
 #   include "macro_eval.fxh"

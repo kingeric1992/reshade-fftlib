@@ -11,16 +11,15 @@ float2 shift(float2 vpos, float2 c) { return vpos += vpos<c? c:-c; }
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 // setup the getter & input dimension for input matrix
-#define FFT_SRC_SIZEX       256
-#define FFT_SRC_SIZEY       256
-#define FFT_SRC_GET(_x, _y) (tex2Dfetch(sampSrc,int4(_x,_y,0,0)).x)
+#define FFT_SRC_SIZEX       2048
+#define FFT_SRC_SIZEY       2048
 
 texture2D texSrc    < source  ="lena.png"; >
                     { Width = FFT_SRC_SIZEX; Height = FFT_SRC_SIZEY; Format = R8; };    // src  tex
-texture2D texInv    { Width = FFT_SRC_SIZEX; Height = FFT_SRC_SIZEY; Format = RG32F; };    // dest tex
-texture2D texDiff   { Width = FFT_SRC_SIZEX; Height = FFT_SRC_SIZEY; Format = RG32F; }; // intermediate tex
-texture2D texC2C    { Width = FFT_SRC_SIZEX; Height = FFT_SRC_SIZEY; Format = RG32F; }; // intermediate tex
-texture2D texR2C    { Width = FFT_SRC_SIZEX; Height = FFT_SRC_SIZEY; Format = RG32F; }; // intermediate tex
+texture2D texInv    { Width = FFT_SRC_SIZEX; Height = FFT_SRC_SIZEY; Format = R8; };    // dest tex
+// texture2D texDiff   { Width = FFT_SRC_SIZEX; Height = FFT_SRC_SIZEY; Format = RG32F; }; // intermediate tex
+// texture2D texC2C    { Width = FFT_SRC_SIZEX; Height = FFT_SRC_SIZEY; Format = RG32F; }; // intermediate tex
+// texture2D texR2C    { Width = FFT_SRC_SIZEX; Height = FFT_SRC_SIZEY; Format = RG32F; }; // intermediate tex
 sampler2D sampSrc   { Texture = texSrc; FILTER(POINT); };
 
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -29,13 +28,17 @@ sampler2D sampSrc   { Texture = texSrc; FILTER(POINT); };
 
 // it does support forward and inverse transform, but doesn't make too much sense
 // doing inverse on real sequence?
+#define FFT_SRC_GET(_x, _y) (tex2Dfetch(sampSrc,int4(_x,_y,0,0)).x)
 #define  FFT_USE_FORWARD
 #include "fft_r2c.fxh"
 
 #undef  FFT_SRC_INV
+#undef  FFT_SRC_GET
+#define FFT_SRC_GET(_x, _y) (tex2Dfetch(sampSrc,int4(_x,_y,0,0)).xy)
 #define FFT_SRC_INV(_x,_y)  (fft_r2c::get(float2(_x,_y))) // getter for inversed flow
+//#define FFT_SRC_INV(_x,_y)  (fft_c2c::get(float2(_x,_y))) // getter for inversed flow
 
-#define FFT_USE_FORWARD
+//#define FFT_USE_FORWARD
 #define FFT_USE_INVERSE
 #include "fft_c2c.fxh"
 
@@ -43,15 +46,22 @@ sampler2D sampSrc   { Texture = texSrc; FILTER(POINT); };
 //  shaders
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
+//sampler2D sampC2Ch { Texture = fft_c2c::texView; FILTER(POINT); };
+//sampler2D sampR2Ch { Texture = fft_r2c::texView; FILTER(POINT); };
+
 #define NORM(a) (log(a+1)/log(1000))
 
 float4 vs_demo( uint vid : SV_VERTEXID ) : SV_POSITION {
     return float4((vid.xx == uint2(2,1)? float2(-3,3):float2(1,-1)),0,1);
 }
 float2 ps_diff( float4 vpos : SV_POSITION ) : SV_TARGET {
-    return abs(fft_r2c::get(vpos.xy) - fft_c2c::get(vpos.xy));
+    //return abs(tex2Dfetch(sampC2Ch,vpos.xyzz).xy - tex2Dfetch(sampR2Ch,vpos.xyzz).xy);
+    return abs(fft_r2c::getInv(vpos.xy) - fft_c2c::getInv(vpos.xy));
 }
-float2 ps_inv( float4 vpos : SV_POSITION ) : SV_TARGET { return fft_c2c::getInv(vpos.xy);}
+float  ps_inv( float4 vpos : SV_POSITION ) : SV_TARGET {
+    return fft_c2c::getInv(vpos.xy).r;
+    //return abs(tex2Dfetch(sampSrc,vpos.xyzz).x - fft_c2c::getInv(vpos.xy).r);
+}
 float2 ps_r2c( float4 vpos : SV_POSITION ) : SV_TARGET { return fft_r2c::get(vpos.xy);}
 float2 ps_c2c( float4 vpos : SV_POSITION ) : SV_TARGET { return fft_c2c::get(vpos.xy);}
 
@@ -59,23 +69,23 @@ float2 ps_c2c( float4 vpos : SV_POSITION ) : SV_TARGET { return fft_c2c::get(vpo
 //  techniques
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
-technique forward_view {
-    pass r2c {
-        VertexShader    = vs_demo;
-        PixelShader     = ps_r2c;
-        RenderTarget    = texR2C;
-    }
-    pass c2c {
-        VertexShader    = vs_demo;
-        PixelShader     = ps_c2c;
-        RenderTarget    = texC2C;
-    }
-    pass diff {
-        VertexShader    = vs_demo;
-        PixelShader     = ps_diff;
-        RenderTarget    = texDiff;
-    }
-}
+// technique forward_view {
+//     pass r2c {
+//         VertexShader    = vs_demo;
+//         PixelShader     = ps_r2c;
+//         RenderTarget    = texR2C;
+//     }
+//     pass c2c {
+//         VertexShader    = vs_demo;
+//         PixelShader     = ps_c2c;
+//         RenderTarget    = texC2C;
+//     }
+//     pass diff {
+//         VertexShader    = vs_demo;
+//         PixelShader     = ps_diff;
+//         RenderTarget    = texDiff;
+//     }
+// }
 technique inverse_view {
     pass p0 {
         VertexShader    = vs_demo;

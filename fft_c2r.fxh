@@ -9,6 +9,8 @@
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 #ifndef _FFT_R2C_FXH_
 #define _FFT_R2C_FXH_
+#error "C2R work-in-progress"
+
 
 #ifndef FFT_SRC_SIZEX
 #   error "undeined FFT_SRC_SIZEX"
