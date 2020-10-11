@@ -54,26 +54,7 @@ sampler2D sampBufVB { Texture = texBufVA; FILTER(POINT); };
 
 //
 // raw input -> bit reverse -> butterfly -> output
-//
-//  forward flow
-//   │
-//   │  r0 output layout:         rN output layout (last)
-//   │     0 ║ 2 ║ 4 ║ 6 ║ 8 ║ ...
-//   │     1 ║ 3 ║ 5 ║ 7 ║ 9 ║ ...
-//   ▼
-//      r1 output layout:              rN-1 output layout
-//         0 │ 1 ║ 4 │ 5 ║  8 │  9 ║ ...
-//         2 │ 3 ║ 6 │ 7 ║ 10 │ 11 ║ ...
-//
-//      r2 output layout               rN-2 output layout
-//         0 │ 1 │ 2 │ 3 ║  8 │  9 │ 10 │ 11 ║ ...
-//         4 │ 5 │ 6 │ 7 ║ 12 │ 13 │ 14 │ 15 ║ ...
-//                                                           ▲
-//      rN output layout (last)           r0 output layout   │
-//         0   │ 1       │ 2       │ ... │ 2^N - 1     ║     │
-//         2^N │ 2^N + 1 │ 2^N + 2 │ ... │ 2^(N+1) - 1 ║     │
-//                                                           │
-//                                                invsersed flow
+
 
 // fetch sample by xPos
 // output pos -> sampleID -> input pos
@@ -152,18 +133,124 @@ float  ampInv( int2 pos)    { return length(getInv(pos)); }
 float  phaseInv( int2 pos)  { return atan2(getInv(pos).yx); }
 
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-//  shaders
+//  fft shaders
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 float4 vs_fft( uint vid : SV_VERTEXID ) : SV_POSITION {
     return float4((vid.xx == uint2(2,1)? float2(-3,3):float2(1,-1)), 0,1);
 }
-// main fft pass.
+//
+//  forward flow
+//   │
+//   │  r0 output layout:         rN output layout (last)
+//   │     0 ║ 2 ║ 4 ║ 6 ║ 8 ║ ...
+//   │     1 ║ 3 ║ 5 ║ 7 ║ 9 ║ ...
+//   ▼
+//      r1 output layout:              rN-1 output layout
+//         0 │ 1 ║ 4 │ 5 ║  8 │  9 ║ ...
+//         2 │ 3 ║ 6 │ 7 ║ 10 │ 11 ║ ...
+//
+//      r2 output layout               rN-2 output layout
+//         0 │ 1 │ 2 │ 3 ║  8 │  9 │ 10 │ 11 ║ ...
+//         4 │ 5 │ 6 │ 7 ║ 12 │ 13 │ 14 │ 15 ║ ...
+//                                                           ▲
+//      rN output layout (last)           r0 output layout   │
+//         0   │ 1       │ 2       │ ... │ 2^N - 1     ║     │
+//         2^N │ 2^N + 1 │ 2^N + 2 │ ... │ 2^(N+1) - 1 ║     │
+//                                                           │
+//                                                invsersed flow
 float4 ps_fft( sampler2D texIn, int4 vpos, float r) {
     float4 c = tex2DfetchID(texIn, vpos, r=exp2(r),.5); // p0,p1
     c.zw = mul(c.zw,twiddle(vpos.x%r,r));               // twiddle
     return float4(c.xy+c.zw, c.xy-c.zw);                // butterfly
 }
+
+//
+//  forward flow
+//   │
+//   │  r0 output layout:                rN output layout (last)
+//   │     0 ║ 4 ║  8 ║ 12 ║ 4n   ║ ... T0.xy
+//   │     1 ║ 5 ║  9 ║ 13 ║ 4n+1 ║ ... T0.zw
+//   ▼     2 ║ 6 ║ 10 ║ 14 ║ 4n+2 ║ ... T1.xy
+//         3 ║ 7 ║ 11 ║ 15 ║ 4n+3 ║ ... T1.zw
+//
+//      r1 output layout:                     rN-1 output layout
+//           0 │ ... |  3 ║ 16 | ... │ 19 ║ ... T0.xy
+//           4 │ ... │  7 ║ 20 │ ... │ 23 ║ ... T0.zw
+//           8 │ ... │ 11 ║ 24 │ ... │ 27 ║ ... T1.xy
+//          12 │ ... │ 15 ║ 28 │ ... │ 31 ║ ... T1.zw
+//
+//      r2 output layout                      rN-2 output layout
+//           0 │ ... │ 15 ║  64 │ ... │  79 ║ ...
+//          16 │ ... │ 31 ║  80 │ ... │  95 ║ ...
+//          32 │ ... │ 47 ║  96 │ ... │ 111 ║ ...
+//          48 │ ... │ 63 ║ 112 │ ... │ 127 ║ ...
+//
+//      rN output layout (last)                 r0 output layout
+//              0 │         1 │         2 │ ... │   4^N - 1 ║  ▲
+//            4^N │   4^N + 1 │   4^N + 2 │ ... │ 2*4^N - 1 ║  │
+//          2*4^N │ 2*4^N + 1 │ 2*4^N + 2 │ ... │ 3*4^N - 1 ║  │
+//          3*4^N │ 3*4^N + 1 │ 3*4^N + 2 │ ... │ 4*4^N - 1 ║  │
+//                                                             │
+//                                                    invsersed flow
+
+void ps_fft4( sampler2D texIn[2], int4 vpos, float r, out float2 c[4]) {
+
+}
+
+//
+//  forward flow
+//   │
+//   │  r0 output layout:                rN output layout (last)
+//   │     0 ║  8 ║ 16 ║ 24 ║ 8n   ║ ... T0.xy
+//   │     1 ║  9 ║ 17 ║ 25 ║ 8n+1 ║ ... T0.zw
+//   ▼     2 ║ 10 ║ 18 ║ 26 ║ 8n+2 ║ ... T1.xy
+//         3 ║ 11 ║ 19 ║ 27 ║ 8n+3 ║ ... T1.zw
+//         4 ║ 12 ║ 20 ║ 28 ║ 8n+4 ║ ... T2.xy
+//         5 ║ 13 ║ 21 ║ 29 ║ 8n+5 ║ ... T2.zw
+//         6 ║ 14 ║ 22 ║ 30 ║ 8n+6 ║ ... T3.xy
+//         7 ║ 15 ║ 23 ║ 31 ║ 8n+7 ║ ... T4.zw
+//
+//      r1 output layout:                     rN-1 output layout
+//           0 │ ... |  7 ║  64 | ... │  71 ║ ... T0.xy
+//           8 │ ... │ 15 ║  72 │ ... │  79 ║ ... T0.zw
+//          16 │ ... │ 23 ║  80 │ ... │  87 ║ ... T1.xy
+//          24 │ ... │ 31 ║  88 │ ... │  95 ║ ... T1.zw
+//          32 │ ... │ 39 ║  96 │ ... │ 103 ║ ... T2.xy
+//          40 │ ... │ 47 ║ 104 │ ... │ 111 ║ ... T2.zw
+//          48 │ ... │ 45 ║ 112 │ ... │ 119 ║ ... T3.xy
+//          56 │ ... │ 63 ║ 120 │ ... │ 127 ║ ... T4.zw
+//
+//      r2 output layout                      rN-2 output layout
+//            0 │ ... │  63 ║ ...
+//           64 │ ... │ 127 ║ ...
+//          128 │ ... │ 191 ║ ...
+//          192 │ ... │ 255 ║ ...
+//          256 │ ... │ 319 ║ ...
+//          320 │ ... │ 383 ║ ...
+//          384 │ ... │ 447 ║ ...
+//          448 │ ... │ 511 ║ ...
+//
+//      rN output layout (last)                 r0 output layout
+//              0 │         1 │         2 │ ... │ 1*8^N - 1 ║
+//            8^N │   8^N + 1 │   8^N + 2 │ ... │ 2*8^N - 1 ║
+//          2*8^N │ 2*8^N + 1 │ 2*8^N + 2 │ ... │ 3*8^N - 1 ║
+//          3*8^N │ 3*8^N + 1 │ 3*8^N + 2 │ ... │ 4*2^N - 1 ║
+//          4*8^N │ 4*8^N + 1 │ 4*8^N + 2 │ ... │ 5*8^N - 1 ║  ▲
+//          5*8^N │ 5*8^N + 1 │ 5*8^N + 2 │ ... │ 6*8^N - 1 ║  │
+//          6*8^N │ 6*8^N + 1 │ 6*8^N + 2 │ ... │ 7*8^N - 1 ║  │
+//          7*8^N │ 7*8^N + 1 │ 7*8^N + 2 │ ... │ 8*8^N - 1 ║  │
+//                                                             │
+//                                                    invsersed flow
+
+void ps_fft8( sampler2D texIn[4], int4 vpos, float r, out float2 c[8]) {
+
+}
+
+
+//+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+//  init shaders.
+//+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 // c2c first pass
 float4 ps_hori(float4 vpos ) {
